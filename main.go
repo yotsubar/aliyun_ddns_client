@@ -41,21 +41,33 @@ func main() {
 	log.Printf("INFO|Aliyun ddns is running")
 
 	failedCnt := 0
+	duration := 1 * time.Second
+	var curDuration time.Duration
+	ticker := time.NewTicker(duration)
+	defaultDuration := time.Duration(ak.IntervalMinutes) * time.Minute
 	for {
-		nextTimeout := time.Duration(ak.IntervalMinutes) * time.Minute
-		if startDDNS() {
-			failedCnt = 0
-		} else {
-			failedCnt++
-			if failedCnt >= 3 {
-				log.Printf("ERROR|Failed %d times, do not retry anymore", failedCnt)
-				failedCnt = 0
-			} else {
-				log.Printf("ERROR|Failed %d times, retry after 10 seconds", failedCnt)
-				nextTimeout = time.Duration(10) * time.Second
-			}
+		<-ticker.C
+		success := startDDNS()
+		duration, failedCnt = nextTick(failedCnt, success, defaultDuration)
+		if curDuration != duration {
+			ticker.Reset(duration)
+			curDuration = duration
 		}
-		time.Sleep(nextTimeout)
+	}
+}
+
+func nextTick(failedCnt int, success bool, defaultDuration time.Duration) (time.Duration, int) {
+	if success {
+		return defaultDuration, 0
+	} else {
+		failedCnt++
+		if failedCnt >= 3 {
+			log.Printf("ERROR|Failed %d times, do not retry anymore", failedCnt)
+			return defaultDuration, 0
+		} else {
+			log.Printf("ERROR|Failed %d times, retry after 10 seconds", failedCnt)
+			return 10 * time.Second, failedCnt
+		}
 	}
 }
 
