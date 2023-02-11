@@ -296,14 +296,14 @@ func findLocalIp(mac string) (string, string) {
 	}
 	intfs, err := net.Interfaces()
 	if err != nil {
-		log.Printf("ERROR|Get Interfaces failed: %v", err)
+		log.Printf("ERROR|Get Interfaces failed: %v, mac: %s", err, mac)
 		return "", ""
 	}
 	for _, intf := range intfs {
 		if hd.String() == intf.HardwareAddr.String() {
 			addrs, err := intf.Addrs()
 			if err != nil {
-				log.Printf("ERROR|Get Addrs failed: %v", err)
+				log.Printf("ERROR|Get Addrs failed: %v, mac: %s", err, mac)
 				return "", ""
 			}
 			var ipv4 string
@@ -320,5 +320,6 @@ func findLocalIp(mac string) (string, string) {
 			return ipv4, ipv6
 		}
 	}
+	log.Printf("ERROR|No ip found, mac: %v", mac)
 	return "", ""
 }
