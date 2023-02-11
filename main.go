@@ -249,7 +249,7 @@ type config struct {
 	AccessKey       string `json:"accessKey"`
 	AccessKeySecret string `json:"accessKeySecret"`
 	IntervalMinutes int32  `json:"intervalMinutes"`
-	MAC             string `json:"max"`
+	MAC             string `json:"mac"`
 }
 
 type ipQueryResult struct {
