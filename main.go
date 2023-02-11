@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/alidns"
@@ -67,7 +68,7 @@ func getIp(rType string) string {
 	return ""
 }
 
-func loadRecords() ([]*dnsRecord, error) {
+func loadRecords() (*dnsRecordPack, error) {
 	file, err := os.Open("config/records.json")
 	if err != nil {
 		return nil, err
@@ -75,12 +76,12 @@ func loadRecords() ([]*dnsRecord, error) {
 	defer file.Close()
 
 	dec := json.NewDecoder(file)
-	var records []*dnsRecord
+	var records dnsRecordPack
 	err = dec.Decode(&records)
 	if err != nil {
 		return nil, err
 	}
-	return records, nil
+	return &records, nil
 }
 
 func loadAccessKey() (*accessKey, error) {
@@ -100,12 +101,12 @@ func loadAccessKey() (*accessKey, error) {
 }
 
 func startDDNS() {
-	records, err := loadRecords()
+	pack, err := loadRecords()
 	if err != nil {
 		log.Printf("ERROR|load records failed: %s", err)
 		return
 	}
-	for _, r := range records {
+	for _, r := range pack.Locals {
 		val, err := getAliRecordValue(r.RecordId)
 		if err != nil {
 			log.Printf("ERROR|getAliRecordValue failed: %s, recordId=%s", err, r.RecordId)
@@ -117,6 +118,47 @@ func startDDNS() {
 			setRecord(r)
 		}
 	}
+
+	for _, r := range pack.Prfixes {
+		if r.Type != "AAAA" {
+			continue
+		}
+		val, err := getAliRecordValue(r.RecordId)
+		if err != nil {
+			log.Printf("ERROR|getAliRecordValue failed: %s, recordId=%s", err, r.RecordId)
+			continue
+		}
+		prefix := getPrefix(r.Prefix)
+		ip := prefix + r.Suffix
+		if ip != val {
+			r.Value = ip
+			setRecord(r)
+		}
+	}
+}
+
+func getPrefix(prefix int32) string {
+	addrs, err := net.InterfaceAddrs()
+
+	if err != nil {
+		log.Printf("ERROR|get ip failed: %v", err)
+	}
+
+	for _, address := range addrs {
+		// 检查ip地址判断是否回环地址
+		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && !ipnet.IP.IsPrivate() {
+			if ipnet.IP.To16() != nil {
+				s := ipnet.IP.String()
+				arr := strings.Split(s, ":")
+				var p string
+				for i := 0; i < int(prefix); i++ {
+					p = p + arr[i] + ":"
+				}
+				return p
+			}
+		}
+	}
+	return ""
 }
 
 func setRecord(record *dnsRecord) {
@@ -154,12 +196,18 @@ func getAliRecordValue(recordId string) (string, error) {
 	return resp.Value, nil
 }
 
+type dnsRecordPack struct {
+	Locals  []*dnsRecord `json:"locals"`
+	Prfixes []*dnsRecord `json:"prfixes"`
+}
 type dnsRecord struct {
 	RecordId string `json:"recordId"`
 	Type     string `json:"type"`
 	RR       string `json:"rr"`
 	Value    string `json:"value"`
 	Host     string `json:"host"`
+	Prefix   int32  `json:"prefix"`
+	Suffix   string `json:"suffix"`
 }
 type accessKey struct {
 	AccessKey       string `json:"accessKey"`
