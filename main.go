@@ -3,9 +3,9 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/alidns"
@@ -29,9 +29,9 @@ func main() {
 	log.SetOutput(file)
 
 	log.Printf("INFO|Starting Aliyun ddns...")
-	ak, err := loadAccessKey()
+	ak, err := loadConfig()
 	if err != nil {
-		log.Fatalf("ERROR|LoadAccessKey failed: %s", err)
+		log.Fatalf("ERROR|Load config failed: %s", err)
 	}
 	client, err = alidns.NewClientWithAccessKey("cn-hangzhou", ak.AccessKey, ak.AccessKeySecret)
 	if err != nil {
@@ -87,15 +87,15 @@ func loadRecords() (*dnsRecordPack, error) {
 	return &records, nil
 }
 
-func loadAccessKey() (*accessKey, error) {
-	file, err := os.Open("config/accessKey.json")
+func loadConfig() (*config, error) {
+	file, err := os.Open("config/config.json")
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
 	dec := json.NewDecoder(file)
-	var ak accessKey
+	var ak config
 	err = dec.Decode(&ak)
 	if err != nil {
 		return nil, err
@@ -116,6 +116,7 @@ func startDDNS() bool {
 		log.Println("ERROR|Could not get ip!")
 		return false
 	}
+	log.Printf("INFO|Fetched ip: [%s|%s]", ipv4, ipv6)
 
 	for _, r := range pack.Locals {
 		val, err := getAliRecordValue(r.RecordId)
@@ -140,9 +141,19 @@ func startDDNS() bool {
 		}
 		return success
 	}
-
+	v6ip := net.ParseIP(ipv6)
+	if v6ip == nil {
+		log.Printf("ERROR|Count not parse ip: %s", ipv6)
+		return false
+	}
 	for _, r := range pack.Prefixes {
 		if r.Type != "AAAA" {
+			continue
+		}
+		ip := buildNewIpv6(r, &v6ip)
+		if ip == "" {
+			log.Printf("ERROR|Find new ip failed: ip=%s, prefix=%d", r.IP, r.Prefix)
+			success = false
 			continue
 		}
 		val, err := getAliRecordValue(r.RecordId)
@@ -151,13 +162,6 @@ func startDDNS() bool {
 			success = false
 			continue
 		}
-		prefix := getPrefix(r.Prefix, ipv6)
-		if prefix == "" {
-			log.Printf("ERROR|Could not get new prefix, %d, %s", r.Prefix, ipv6)
-			success = false
-			continue
-		}
-		ip := prefix + r.Suffix
 		if ip != val {
 			r.Value = ip
 			success = setRecord(r) && success
@@ -167,16 +171,16 @@ func startDDNS() bool {
 	return success
 }
 
-func getPrefix(prefix int32, ipv6 string) string {
-	if ipv6 == "" {
+func buildNewIpv6(r *dnsRecord, ipv6 *net.IP) string {
+	oldIp := net.ParseIP(r.IP)
+	if oldIp == nil {
+		log.Printf("ERROR|Count not parse ip: %s", r.IP)
 		return ""
 	}
-	arr := strings.Split(ipv6, ":")
-	var p string
-	for i := 0; i < int(prefix); i++ {
-		p = p + arr[i] + ":"
-	}
-	return p
+	bytePrefix := (r.Prefix) / 8
+	suffix := oldIp[bytePrefix:]
+	prefix := (*ipv6)[:bytePrefix]
+	return net.IP(append(prefix, suffix...)).String()
 }
 
 func setRecord(record *dnsRecord) bool {
@@ -227,9 +231,9 @@ type dnsRecord struct {
 	Value    string `json:"value"`
 	Host     string `json:"host"`
 	Prefix   int32  `json:"prefix"`
-	Suffix   string `json:"suffix"`
+	IP       string `json:"ip"`
 }
-type accessKey struct {
+type config struct {
 	AccessKey       string `json:"accessKey"`
 	AccessKeySecret string `json:"accessKeySecret"`
 	IntervalMinutes int32  `json:"intervalMinutes"`
