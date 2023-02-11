@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"log"
 	"net"
 	"net/http"
@@ -40,8 +41,13 @@ func main() {
 	defer client.Shutdown()
 	log.Printf("INFO|Aliyun ddns is running")
 
+	var startDelay int
+	flag.IntVar(&startDelay, "startDelay", 1, "")
+	flag.Parse()
+	log.Printf("INFO|Start delay(s): %d", startDelay)
+
 	failedCnt := 0
-	duration := 1 * time.Second
+	duration := time.Duration(startDelay) * time.Second
 	var curDuration time.Duration
 	ticker := time.NewTicker(duration)
 	defaultDuration := time.Duration(conf.IntervalMinutes) * time.Minute
