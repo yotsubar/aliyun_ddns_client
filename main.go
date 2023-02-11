@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 	"log"
-	"net"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -31,57 +31,32 @@ func main() {
 	log.Printf("INFO|Starting Aliyun ddns...")
 	ak, err := loadAccessKey()
 	if err != nil {
-		log.Fatalf("ERROR|loadAccessKey failed: %s", err)
+		log.Fatalf("ERROR|LoadAccessKey failed: %s", err)
 	}
 	client, err = alidns.NewClientWithAccessKey("cn-hangzhou", ak.AccessKey, ak.AccessKeySecret)
 	if err != nil {
-		log.Fatalf("ERROR|open alidns client failed: %s", err)
+		log.Fatalf("ERROR|Open alidns client failed: %s", err)
 	}
 	defer client.Shutdown()
 	log.Printf("INFO|Aliyun ddns is running")
 
 	failedCnt := 0
 	for {
+		nextTimeout := time.Duration(ak.IntervalMinutes) * time.Minute
 		if startDDNS() {
 			failedCnt = 0
-			time.Sleep(time.Duration(ak.IntervalMinutes) * time.Minute)
 		} else {
 			failedCnt++
-			log.Printf("INFO|retry for failed: %d", failedCnt)
 			if failedCnt >= 3 {
-				// if failed 3 times, do not retry anymore
+				log.Printf("ERROR|Failed %d times, do not retry anymore", failedCnt)
 				failedCnt = 0
-				time.Sleep(time.Duration(ak.IntervalMinutes) * time.Minute)
 			} else {
-				// if failed, retry after 10 seconds
-				time.Sleep(time.Duration(10) * time.Second)
+				log.Printf("ERROR|Failed %d times, retry after 10 seconds", failedCnt)
+				nextTimeout = time.Duration(10) * time.Second
 			}
 		}
+		time.Sleep(nextTimeout)
 	}
-}
-
-func getIp(rType string) string {
-	addrs, err := net.InterfaceAddrs()
-
-	if err != nil {
-		log.Printf("ERROR|get ip failed: %v", err)
-	}
-
-	for _, address := range addrs {
-		// 检查ip地址判断是否回环地址
-		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if rType == "AAAA" {
-				if ipnet.IP.To16() != nil {
-					return ipnet.IP.String()
-				}
-			} else {
-				if ipnet.IP.To4() != nil {
-					return ipnet.IP.String()
-				}
-			}
-		}
-	}
-	return ""
 }
 
 func loadRecords() (*dnsRecordPack, error) {
@@ -119,35 +94,57 @@ func loadAccessKey() (*accessKey, error) {
 func startDDNS() bool {
 	pack, err := loadRecords()
 	if err != nil {
-		log.Printf("ERROR|load records failed: %s", err)
+		log.Printf("ERROR|Load records failed: %s", err)
 		return false
 	}
 	success := true
+
+	ipv4, ipv6 := fetchIp()
+	if ipv4 == "" && ipv6 == "" {
+		log.Println("ERROR|Could not get ip!")
+		return false
+	}
+
 	for _, r := range pack.Locals {
 		val, err := getAliRecordValue(r.RecordId)
 		if err != nil {
-			log.Printf("ERROR|getAliRecordValue failed: %s, recordId=%s", err, r.RecordId)
+			log.Printf("ERROR|GetAliRecordValue failed: %s, recordId=%s", err, r.RecordId)
 			success = false
 			continue
 		}
-		ip := getIp(r.Type)
+		ip := ipv4
+		if r.Type == "AAAA" {
+			ip = ipv6
+		}
 		if ip != val {
 			r.Value = ip
 			success = setRecord(r) && success
 		}
 	}
 
-	for _, r := range pack.Prfixes {
+	if ipv6 == "" {
+		if len(pack.Prefixes) > 0 {
+			log.Println("ERROR|Could not find ipv6, ignore prefixes.")
+		}
+		return success
+	}
+
+	for _, r := range pack.Prefixes {
 		if r.Type != "AAAA" {
 			continue
 		}
 		val, err := getAliRecordValue(r.RecordId)
 		if err != nil {
-			log.Printf("ERROR|getAliRecordValue failed: %s, recordId=%s", err, r.RecordId)
+			log.Printf("ERROR|GetAliRecordValue failed: %s, recordId=%s", err, r.RecordId)
 			success = false
 			continue
 		}
-		prefix := getPrefix(r.Prefix)
+		prefix := getPrefix(r.Prefix, ipv6)
+		if prefix == "" {
+			log.Printf("ERROR|Could not get new prefix, %d, %s", r.Prefix, ipv6)
+			success = false
+			continue
+		}
 		ip := prefix + r.Suffix
 		if ip != val {
 			r.Value = ip
@@ -158,33 +155,21 @@ func startDDNS() bool {
 	return success
 }
 
-func getPrefix(prefix int32) string {
-	addrs, err := net.InterfaceAddrs()
-
-	if err != nil {
-		log.Printf("ERROR|get ip failed: %v", err)
+func getPrefix(prefix int32, ipv6 string) string {
+	if ipv6 == "" {
+		return ""
 	}
-
-	for _, address := range addrs {
-		// 检查ip地址判断是否回环地址
-		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && !ipnet.IP.IsPrivate() {
-			if ipnet.IP.To16() != nil {
-				s := ipnet.IP.String()
-				arr := strings.Split(s, ":")
-				var p string
-				for i := 0; i < int(prefix); i++ {
-					p = p + arr[i] + ":"
-				}
-				return p
-			}
-		}
+	arr := strings.Split(ipv6, ":")
+	var p string
+	for i := 0; i < int(prefix); i++ {
+		p = p + arr[i] + ":"
 	}
-	return ""
+	return p
 }
 
 func setRecord(record *dnsRecord) bool {
 	if record.Value == "" {
-		log.Printf("WARN|update alidns no val, ignore: [%s|%s|%s]", record.Type, record.Host, record.Value)
+		log.Printf("WARN|Update alidns no val, ignore: [%s|%s|%s]", record.Type, record.Host, record.Value)
 		return true
 	}
 
@@ -200,10 +185,10 @@ func setRecord(record *dnsRecord) bool {
 
 	resp, err := client.UpdateDomainRecord(request)
 	if err != nil {
-		log.Printf("ERROR|update alidns failed: %s, %v", err.Error(), resp)
+		log.Printf("ERROR|Update alidns failed: %s, %v", err.Error(), resp)
 		return false
 	} else {
-		log.Printf("INFO|update alidns:%v, [%s|%s|%s]", resp.IsSuccess(), record.Type, record.Host, record.Value)
+		log.Printf("INFO|Update alidns:%v, [%s|%s|%s]", resp.IsSuccess(), record.Type, record.Host, record.Value)
 		return true
 	}
 }
@@ -220,8 +205,8 @@ func getAliRecordValue(recordId string) (string, error) {
 }
 
 type dnsRecordPack struct {
-	Locals  []*dnsRecord `json:"locals"`
-	Prfixes []*dnsRecord `json:"prfixes"`
+	Locals   []*dnsRecord `json:"locals"`
+	Prefixes []*dnsRecord `json:"prefixes"`
 }
 type dnsRecord struct {
 	RecordId string `json:"recordId"`
@@ -236,4 +221,40 @@ type accessKey struct {
 	AccessKey       string `json:"accessKey"`
 	AccessKeySecret string `json:"accessKeySecret"`
 	IntervalMinutes int32  `json:"intervalMinutes"`
+}
+
+type ipQueryResult struct {
+	IP        string `json:"IP"`
+	IPVersion string `json:"IPVersion"`
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Result    bool   `json:"result"`
+}
+
+func fetchIp() (string, string) {
+	ipv4 := findPublicIp("https://4.ipw.cn/api/ip/myip?json")
+	ipv6 := findPublicIp("https://6.ipw.cn/api/ip/myip?json")
+	return ipv4, ipv6
+}
+
+func findPublicIp(url string) string {
+	resp, err := http.Get(url)
+	if err != nil {
+		log.Printf("ERROR|Fetch ip http failed, url: %s", url)
+		return ""
+	}
+
+	jd := json.NewDecoder(resp.Body)
+	rlt := ipQueryResult{}
+	err = jd.Decode(&rlt)
+	if err != nil {
+		log.Printf("ERROR|Fetch ip decode failed: %s", err)
+		return ""
+	}
+	if rlt.Code == "querySuccess" {
+		return rlt.IP
+	} else {
+		log.Printf("ERROR|Fetch ip failed: %s", rlt.Message)
+		return ""
+	}
 }

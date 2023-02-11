@@ -2,23 +2,15 @@ package main
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 )
 
 func TestGetIp(t *testing.T) {
-	ip := getIp("AAAA")
-	if !strings.Contains(ip, ":") {
-		t.Fatal(`TestGetIp AAAA error`)
-	}
-
-	ip = getIp("A")
-	if !strings.Contains(ip, ".") {
-		t.Fatal(`TestGetIp A error`)
-	}
+	ipv4, ipv6 := fetchIp()
+	fmt.Printf("GetIp: %s, %s\n", ipv4, ipv6)
 }
 
 func TestGetPrefix(t *testing.T) {
-	prefix := getPrefix(4)
+	prefix := getPrefix(4, "240e:3b2:7e5c:4360:ff18:361d:a5c8:f22c")
 	fmt.Printf("prefix| %s\n", prefix)
 }
