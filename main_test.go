@@ -22,3 +22,9 @@ func TestBuildNewIpv6(t *testing.T) {
 		t.FailNow()
 	}
 }
+
+func TestFetchLocalIp(t *testing.T) {
+	mac := "0A:00:27:00:00:0A"
+	ipv4, ipv6 := findLocalIp(mac)
+	fmt.Printf("Found: %s|%s\n", ipv4, ipv6)
+}

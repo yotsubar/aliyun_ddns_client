@@ -29,11 +29,11 @@ func main() {
 	log.SetOutput(file)
 
 	log.Printf("INFO|Starting Aliyun ddns...")
-	ak, err := loadConfig()
+	conf, err := loadConfig()
 	if err != nil {
 		log.Fatalf("ERROR|Load config failed: %s", err)
 	}
-	client, err = alidns.NewClientWithAccessKey("cn-hangzhou", ak.AccessKey, ak.AccessKeySecret)
+	client, err = alidns.NewClientWithAccessKey("cn-hangzhou", conf.AccessKey, conf.AccessKeySecret)
 	if err != nil {
 		log.Fatalf("ERROR|Open alidns client failed: %s", err)
 	}
@@ -44,10 +44,10 @@ func main() {
 	duration := 1 * time.Second
 	var curDuration time.Duration
 	ticker := time.NewTicker(duration)
-	defaultDuration := time.Duration(ak.IntervalMinutes) * time.Minute
+	defaultDuration := time.Duration(conf.IntervalMinutes) * time.Minute
 	for {
 		<-ticker.C
-		success := startDDNS()
+		success := startDDNS(conf)
 		duration, failedCnt = nextTick(failedCnt, success, defaultDuration)
 		if curDuration != duration {
 			ticker.Reset(duration)
@@ -103,7 +103,7 @@ func loadConfig() (*config, error) {
 	return &ak, nil
 }
 
-func startDDNS() bool {
+func startDDNS(conf *config) bool {
 	pack, err := loadRecords()
 	if err != nil {
 		log.Printf("ERROR|Load records failed: %s", err)
@@ -111,7 +111,13 @@ func startDDNS() bool {
 	}
 	success := true
 
-	ipv4, ipv6 := fetchIp()
+	var ipv4 string
+	var ipv6 string
+	if conf.MAC != "" {
+		ipv4, ipv6 = findLocalIp(conf.MAC)
+	} else {
+		ipv4, ipv6 = fetchIp()
+	}
 	if ipv4 == "" && ipv6 == "" {
 		log.Println("ERROR|Could not get ip!")
 		return false
@@ -237,6 +243,7 @@ type config struct {
 	AccessKey       string `json:"accessKey"`
 	AccessKeySecret string `json:"accessKeySecret"`
 	IntervalMinutes int32  `json:"intervalMinutes"`
+	MAC             string `json:"max"`
 }
 
 type ipQueryResult struct {
@@ -273,4 +280,39 @@ func findPublicIp(url string) string {
 		log.Printf("ERROR|Fetch ip failed: %s", rlt.Message)
 		return ""
 	}
+}
+
+func findLocalIp(mac string) (string, string) {
+	hd, err := net.ParseMAC(mac)
+	if err != nil {
+		log.Printf("ERROR|ParseMAC failed: %v, mac: %s", err, mac)
+		return "", ""
+	}
+	intfs, err := net.Interfaces()
+	if err != nil {
+		log.Printf("ERROR|Get Interfaces failed: %v", err)
+		return "", ""
+	}
+	for _, intf := range intfs {
+		if hd.String() == intf.HardwareAddr.String() {
+			addrs, err := intf.Addrs()
+			if err != nil {
+				log.Printf("ERROR|Get Addrs failed: %v", err)
+				return "", ""
+			}
+			var ipv4 string
+			var ipv6 string
+			for _, address := range addrs {
+				if ipnet, ok := address.(*net.IPNet); ok && ipnet.IP.IsGlobalUnicast() {
+					if p4 := ipnet.IP.To4(); len(p4) == net.IPv4len {
+						ipv4 = ipnet.IP.String()
+					} else if ipv6 == "" {
+						ipv6 = ipnet.IP.String()
+					}
+				}
+			}
+			return ipv4, ipv6
+		}
+	}
+	return "", ""
 }
