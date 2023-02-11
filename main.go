@@ -28,6 +28,7 @@ func main() {
 	defer file.Close()
 	log.SetOutput(file)
 
+	log.Printf("INFO|Starting Aliyun ddns...")
 	ak, err := loadAccessKey()
 	if err != nil {
 		log.Fatalf("ERROR|loadAccessKey failed: %s", err)
@@ -37,10 +38,25 @@ func main() {
 		log.Fatalf("ERROR|open alidns client failed: %s", err)
 	}
 	defer client.Shutdown()
-	log.Printf("INFO|Aliyun ddns started")
+	log.Printf("INFO|Aliyun ddns is running")
+
+	failedCnt := 0
 	for {
-		startDDNS()
-		time.Sleep(time.Duration(ak.IntervalMinutes) * time.Minute)
+		if startDDNS() {
+			failedCnt = 0
+			time.Sleep(time.Duration(ak.IntervalMinutes) * time.Minute)
+		} else {
+			failedCnt++
+			log.Printf("INFO|retry for failed: %d", failedCnt)
+			if failedCnt >= 3 {
+				// if failed 3 times, do not retry anymore
+				failedCnt = 0
+				time.Sleep(time.Duration(ak.IntervalMinutes) * time.Minute)
+			} else {
+				// if failed, retry after 10 seconds
+				time.Sleep(time.Duration(10) * time.Second)
+			}
+		}
 	}
 }
 
@@ -100,22 +116,24 @@ func loadAccessKey() (*accessKey, error) {
 	return &ak, nil
 }
 
-func startDDNS() {
+func startDDNS() bool {
 	pack, err := loadRecords()
 	if err != nil {
 		log.Printf("ERROR|load records failed: %s", err)
-		return
+		return false
 	}
+	success := true
 	for _, r := range pack.Locals {
 		val, err := getAliRecordValue(r.RecordId)
 		if err != nil {
 			log.Printf("ERROR|getAliRecordValue failed: %s, recordId=%s", err, r.RecordId)
+			success = false
 			continue
 		}
 		ip := getIp(r.Type)
 		if ip != val {
 			r.Value = ip
-			setRecord(r)
+			success = setRecord(r) && success
 		}
 	}
 
@@ -126,15 +144,18 @@ func startDDNS() {
 		val, err := getAliRecordValue(r.RecordId)
 		if err != nil {
 			log.Printf("ERROR|getAliRecordValue failed: %s, recordId=%s", err, r.RecordId)
+			success = false
 			continue
 		}
 		prefix := getPrefix(r.Prefix)
 		ip := prefix + r.Suffix
 		if ip != val {
 			r.Value = ip
-			setRecord(r)
+			success = setRecord(r) && success
 		}
 	}
+
+	return success
 }
 
 func getPrefix(prefix int32) string {
@@ -161,10 +182,10 @@ func getPrefix(prefix int32) string {
 	return ""
 }
 
-func setRecord(record *dnsRecord) {
+func setRecord(record *dnsRecord) bool {
 	if record.Value == "" {
 		log.Printf("WARN|update alidns no val, ignore: [%s|%s|%s]", record.Type, record.Host, record.Value)
-		return
+		return true
 	}
 
 	request := alidns.CreateUpdateDomainRecordRequest()
@@ -180,8 +201,10 @@ func setRecord(record *dnsRecord) {
 	resp, err := client.UpdateDomainRecord(request)
 	if err != nil {
 		log.Printf("ERROR|update alidns failed: %s, %v", err.Error(), resp)
+		return false
 	} else {
 		log.Printf("INFO|update alidns:%v, [%s|%s|%s]", resp.IsSuccess(), record.Type, record.Host, record.Value)
+		return true
 	}
 }
 
